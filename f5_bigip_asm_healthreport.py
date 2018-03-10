@@ -14,8 +14,6 @@ from time import sleep
 parser = argparse.ArgumentParser(description='A tool to detach ASM policies from virtual to allow some global change to ASM configuration, then restore policies to virtuals')
 parser.add_argument('--user', '-u', help='username to use for authentication', required=True)
 parser.add_argument('--bigip', '-b', help='IP or hostname of BIG-IP Management or Self IP')
-parser.add_argument('--variable', help='ASM variable name to modify')
-parser.add_argument('--value', help='Variable value')
 
 args = parser.parse_args()
 
@@ -64,24 +62,27 @@ bip.headers.update(authHeader)
 ltmVirtualDict = {}
 ltmVirtuals = bip.get('https://%s/mgmt/tm/ltm/virtual' % (args.bigip)).json()
 for virtual in ltmVirtuals['items']:
+    print ('Reading virtual: %s' % (virtual['fullPath']))
     ltmVirtualDict[virtual['fullPath']] = virtual
 
 asmPolicyDict = {}
-asmPolicies = bip.get('https://%s/mgmt/tm/asm/policies?expandSubcollections=true' % (args.bigip)).json()
+asmPolicies = bip.get('https://%s/mgmt/tm/asm/policies' % (args.bigip)).json()
 for policy in asmPolicies['items']:
-    virtualServer in policy['virtualServers']:
+    for virtualServer in policy['virtualServers']:
         asmPolicyDict[virtualServer] = policy
 
 ltmVirtualsWithoutAsm = []
 for virtual in ltmVirtualDict.keys():
-    print('--\nLTM Virtual: %s - FullPath: %s\nDestination: ' % (virtual['name'], virtual['fullPath'], virtual['destination'].split("/")[-1]))
-    if asmPolicyDict[virtual]:
-        print('ASM Policy Name: %s\nEnforcement Mode: %s\n' % (asmPolicyDict[virtual]['name'], asmPolicyDict[virtual]['enforcementMode'])
+    if asmPolicyDict.get(virtual):
+        print('--\nLTM Virtual: %s - FullPath: %s\nDestination: %s' % (ltmVirtualDict[virtual]['name'], virtual, ltmVirtualDict[virtual]['destination'].split("/")[-1]))
+        print('ASM Policy Name: %s\nEnforcement Mode: %s' % (asmPolicyDict[virtual]['name'], asmPolicyDict[virtual]['enforcementMode']))
         if ltmVirtualDict[virtual].get('securityLogProfiles'):
             for logProfile in ltmVirtualDict[virtual]['securityLogProfiles']:
                 print('Log Profile: %s' % (logProfile))
+        else:
+            print('Log Profile Not Attached')
     else:
-        ltmVirtualsWithoutAsm.add(virtual)
+        ltmVirtualsWithoutAsm.append(virtual)
 
 if ltmVirtualsWithoutAsm:
     print ('--\nLTM Virtuals Without an ASM Policy')
