@@ -14,6 +14,10 @@ from time import sleep
 parser = argparse.ArgumentParser(description='A tool to detach ASM policies from virtual to allow some global change to ASM configuration, then restore policies to virtuals')
 parser.add_argument('--user', '-u', help='username to use for authentication', required=True)
 parser.add_argument('--bigip', '-b', help='IP or hostname of BIG-IP Management or Self IP')
+passwdoption = parser.add_mutually_exclusive_group()
+passwdoption.add_argument('--password', '-p', help='Supply Password as command line argument \(dangerous due to shell history\)')
+passwdoption.add_argument('--passfile', '-pf', help='Obtain password from a text file \(with password string as the only contents of file\)')
+parser.add_argument('--hostport', '-hp', help='List of NameIP:port pairs that will be checked with nc \(Example: logserver,514\) for reachability', nargs='*')
 
 args = parser.parse_args()
 
@@ -37,6 +41,69 @@ def query_yes_no(question, default="no"):
         else:
             sys.stdout.write("Please respond with 'yes' or 'no' (or 'y' or 'n').\n")
 
+def getConfirmedPassword(bigip, username, password):
+    bip = requests.session()
+    bip.verify = False
+    bip.auth = (username, password)
+    credentialsValidated = False
+    while not credentialsValidated:
+        testRequest = bip.get('https://%s/mgmt/tm/sys/' % (bigip))
+        if testRequest.status_code == 200:
+            credentialsValidated = True
+            return password
+        elif testRequest.status_code == 401:
+            print ('Invalid credentials for user %s' % (user))
+            passwordRetryQuery = 'Retry with new password (No to exit)?'
+            if query_yes_no(passwordRetryQuery, default="yes"):
+                password = getpass.getpass('Re-enter Password for %s' % (user))
+                bip.auth = (username, password)
+            else:
+                print('Exiting due to invalid authentication credentials')
+                quit()
+        else:
+            print('Unexpected Error from test request to validate credentials')
+            print('Status Code: %s' % (testRequest.status_code))
+            print('Body: %s' % (testRequest.content))
+            print('Exiting due to unexpected error condition')
+            quit()
+
+def get_system_info(bigip, username, password):
+    systemInfo = dict()
+    bip = requests.session()
+    bip.verify = False
+    bip.auth = (username, password)
+    #bip.headers.update(authHeader)
+    globalSettings = bip.get('https://%s/mgmt/tm/sys/global-settings/' % (bigip)).json()
+    hardware = bip.get('https://%s/mgmt/tm/sys/hardware/' % (bigip)).json()
+    partitions = list()
+    partitionCollection = bip.get('https://%s/mgmt/tm/auth/partition/' % (bigip)).json()
+    for partition in partitionCollection['items']:
+        partitions.append(partition['fullPath'])
+    provisionedModules = list()
+    provision = bip.get('https://%s/mgmt/tm/sys/provision/' % (bigip)).json()
+    for module in provision['items']:
+        if module.get('level'):
+            if module['level'] != 'none':
+                provisionedModules.append(module['name'])
+    print ('Provisioned Modules: %s' % (provisionedModules))
+    systemInfo['provisionedModules'] = provisionedModules
+    systemInfo['baseMac'] = hardware['entries']['https://localhost/mgmt/tm/sys/hardware/platform']['nestedStats']['entries']['https://localhost/mgmt/tm/sys/hardware/platform/0']['nestedStats']['entries']['baseMac']['description']
+    systemInfo['marketingName'] = hardware['entries']['https://localhost/mgmt/tm/sys/hardware/platform']['nestedStats']['entries']['https://localhost/mgmt/tm/sys/hardware/platform/0']['nestedStats']['entries']['marketingName']['description']
+    version = bip.get('https://%s/mgmt/tm/sys/version/' % (bigip)).json()
+    if version.get('nestedStats'):
+        systemInfo['version'] = version['entries']['https://localhost/mgmt/tm/sys/version/0']['nestedStats']['entries']['Version']['description']
+    else:
+        volumes = bip.get('https://%s/mgmt/tm/sys/software/volume' % (bigip)).json()
+        for volume in volumes['items']:
+            if volume.get('active'):
+                if volume['active'] == True:
+                    systemInfo['version'] = volume['version']
+    systemInfo['hostname'] = globalSettings['hostname']
+    systemInfo['provision'] = provision
+    print ('hostname: %s' % (systemInfo['hostname']))
+    print ('version: %s' % (systemInfo['version']))
+    systemInfo['provision'] = bip.get('https://%s/mgmt/tm/sys/provision/' % (bigip)).json()
+    return systemInfo
 
 def get_auth_token(bigip, username, password):
     authbip = requests.session()
@@ -51,13 +118,25 @@ def get_auth_token(bigip, username, password):
     return token
 
 
-passwd = getpass.getpass('Enter Password for: %s: ' % (args.user))
+if args.password:
+    unverifiedPassword = args.password
+elif args.passfile:
+    with open(args.passfile, 'r') as file:
+        unverifiedPassword = file.read().strip()
+else:
+   unverifiedPassword = getpass.getpass('Enter Password for: %s: ' % (args.user))
+
+password = getConfirmedPassword(args.bigip, args.user, unverifiedPassword)
 bip = requests.session()
 requests.packages.urllib3.disable_warnings()
 bip.verify = False
 contentJsonHeader = {'Content-Type': "application/json"}
-authHeader = {'X-F5-Auth-Token': get_auth_token(args.bigip, args.user, passwd)}
-bip.headers.update(authHeader)
+bipSystemInfo = get_system_info(args.bigip, args.user, password)
+if float('%s.%s' % (bipSystemInfo['version'].split(".")[0], bipSystemInfo['version'][1])) >= 11.6:
+    authHeader = {'X-F5-Auth-Token': get_auth_token(args.bigip, args.user, password)}
+    bip.headers.update(authHeader)
+else:
+    bip.auth = (args.user, password)
 
 ltmVirtualDict = {}
 ltmVirtuals = bip.get('https://%s/mgmt/tm/ltm/virtual' % (args.bigip)).json()
@@ -94,8 +173,48 @@ for virtual in ltmVirtualDict.keys():
 
 if ltmVirtualsWithoutAsm:
     print ('--\nLTM Virtuals Without an ASM Policy')
-for virtual in ltmVirtualsWithoutAsm:
-    print virtual
+    for virtual in ltmVirtualsWithoutAsm:
+        print virtual
 
+### BOX GLOBAL HEALTH CHECK
+licenseWithNesting = bip.get('https://%s/mgmt/tm/sys/license' % (args.bigip)).json()
+license = licenseWithNesting['entries']['https://localhost/mgmt/tm/sys/license/0']['nestedStats']['entries']
+ipIntelligenceLicensed = False
+if license.get('https://localhost/mgmt/tm/sys/license/0/time-limited-modules'):
+    timeLimitedModules = license['https://localhost/mgmt/tm/sys/license/0/time-limited-modules']
+    for entry in timeLimitedModules['nestedStats']['entries'].keys():
+        if 'Intelligence' in entry:
+            ipIntelligenceLicensed = True
+            ipIntelStart = timeLimitedModules['nestedStats']['entries'][entry]['nestedStats']['entries']['timeStart']['description']
+            ipIntelEnd = timeLimitedModules['nestedStats']['entries'][entry]['nestedStats']['entries']['timeEnd']['description']
+
+if ipIntelligenceLicensed:
+    print ('IP Intelligence Licensed - Start: %s End: %s' % (ipIntelStart, ipIntelEnd))
+    checkBrightCloudPayload = {'command': 'run', 'utilCmdArgs': '-c \'nc -z -w3 vector.brightcloud.com 443\''}
+    checkBrightCloud = bip.post('https://%s/mgmt/tm/util/bash' % (args.bigip), headers=contentJsonHeader, data=json.dumps(checkBrightCloudPayload)).json()
+    if 'getaddrinfo' in checkBrightCloud['commandResult'] or 'name resolution' in checkBrightCloud['commandResult']:
+        print ('Unsuccessful attempt to reach Brightcloud ue to name resolution problem')
+    elif 'succeeded' in checkBrightCloud['commandResult']:
+        print ('Successfully Reached Brightcloud')
+    elif checkBrightCloud['commandResult'] == '':
+        print ('Unsuccessful Attempt to Reach Brightcloud')
+    else:
+        print ('Unknown Error in reaching Brightcloud: %s' % (checkBrightCloud['commandResult']))
+
+if args.hostport:
+    print ('args.hostport: %s' % (args.hostport))
+    for hostPort in args.hostport:
+        print ('hostPort: %s' % (hostPort))
+        print ('Checking Host: %s Port: %s for reachability' % (hostPort.split(',')[0], hostPort.split(',')[1]))
+        checkHostPayload = {'command': 'run', 'utilCmdArgs': '-c \'nc -z -w3 %s %s\'' % (hostPort.split(',')[0], hostPort.split(',')[1])}
+        checkHost = bip.post('https://%s/mgmt/tm/util/bash' % (args.bigip), headers=contentJsonHeader, data=json.dumps(checkHostPayload)).json()
+        if 'getaddrinfo' in checkHost['commandResult']:
+            print ('Unsuccessful attempt to reach: %s %s due to name resolution problem' % (hostPort.split(',')[0], hostPort.split(',')[1]))
+        elif 'succeeded' in checkHost['commandResult']:
+            print ('Successfully Reached Host: %s %s' % (hostPort.split(',')[0], hostPort.split(',')[1]))
+        elif checkHost['commandResult'] == '':
+            print ('Unsuccessful Attempt to Reach Host: %s %s' % (hostPort.split(',')[0], hostPort.split(',')[1]))
+        else:
+            print ('Unknown Error in reaching %s %s: %s' % (hostPort.split(',')[0], hostPort.split(',')[1], checkBrightCloud['commandResult']))
 #if query_yes_no('Ready to Proceed with restoration of ASM Policy to Virtuals?', default="no"):
 #    pass
