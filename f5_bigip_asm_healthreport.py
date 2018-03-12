@@ -76,6 +76,14 @@ for virtual in ltmVirtualDict.keys():
     if asmPolicyDict.get(virtual):
         print('--\nLTM Virtual: %s - FullPath: %s\nDestination: %s' % (ltmVirtualDict[virtual]['name'], virtual, ltmVirtualDict[virtual]['destination'].split("/")[-1]))
         print('ASM Policy Name: %s\nEnforcement Mode: %s' % (asmPolicyDict[virtual]['name'], asmPolicyDict[virtual]['enforcementMode']))
+        print('ASM Policy Last Change: %s' % (asmPolicyDict[virtual]['versionDatetime']))
+        asmPolicyGeneralSettings = bip.get('https://%s/mgmt/tm/asm/policies/%s/general' % (args.bigip, asmPolicyDict[virtual]['id'])).json()
+        if asmPolicyGeneralSettings['trustXff']:
+            print('Trust XFF enabled')
+            for customXff in asmPolicyGeneralSettings.get('customXffHeaders'):
+                print('Custom XFF Header: %s' % (customXff))
+        else:
+            print('Trust XFF disabled')
         if ltmVirtualDict[virtual].get('securityLogProfiles'):
             for logProfile in ltmVirtualDict[virtual]['securityLogProfiles']:
                 print('Log Profile: %s' % (logProfile))
