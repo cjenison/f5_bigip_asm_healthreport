@@ -41,7 +41,7 @@ def query_yes_no(question, default="no"):
         else:
             sys.stdout.write("Please respond with 'yes' or 'no' (or 'y' or 'n').\n")
 
-def getConfirmedPassword(bigip, username, password):
+def get_confirmed_password(bigip, username, password):
     bip = requests.session()
     bip.verify = False
     bip.auth = (username, password)
@@ -131,7 +131,7 @@ elif args.passfile:
 else:
    unverifiedPassword = getpass.getpass('Enter Password for: %s: ' % (args.user))
 
-password = getConfirmedPassword(args.bigip, args.user, unverifiedPassword)
+password = get_confirmed_password(args.bigip, args.user, unverifiedPassword)
 bip = requests.session()
 bip.verify = False
 contentJsonHeader = {'Content-Type': "application/json"}
