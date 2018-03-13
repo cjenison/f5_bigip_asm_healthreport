@@ -98,6 +98,10 @@ def get_system_info(bigip, username, password):
             if volume.get('active'):
                 if volume['active'] == True:
                     systemInfo['version'] = volume['version']
+    systemInfo['shortVersion'] = float('%s.%s' % (systemInfo['version'].split(".")[0], systemInfo['version'].split(".")[1]))
+    systemDatePayload = {'command':'run', 'utilCmdArgs': '-c \'date +%Y%m%d\''}
+    systemInfo['systemDate'] = bip.post('https://%s/mgmt/tm/util/bash' % (args.bigip), headers=contentJsonHeader, data=json.dumps(systemDatePayload)).json()['commandResult']
+    print ('System Date: %s' % (systemInfo['systemDate']))
     systemInfo['hostname'] = globalSettings['hostname']
     systemInfo['provision'] = provision
     print ('hostname: %s' % (systemInfo['hostname']))
@@ -118,6 +122,7 @@ def get_auth_token(bigip, username, password):
     return token
 
 
+requests.packages.urllib3.disable_warnings()
 if args.password:
     unverifiedPassword = args.password
 elif args.passfile:
@@ -128,7 +133,6 @@ else:
 
 password = getConfirmedPassword(args.bigip, args.user, unverifiedPassword)
 bip = requests.session()
-requests.packages.urllib3.disable_warnings()
 bip.verify = False
 contentJsonHeader = {'Content-Type': "application/json"}
 bipSystemInfo = get_system_info(args.bigip, args.user, password)
@@ -156,13 +160,29 @@ for virtual in ltmVirtualDict.keys():
         print('--\nLTM Virtual: %s - FullPath: %s\nDestination: %s' % (ltmVirtualDict[virtual]['name'], virtual, ltmVirtualDict[virtual]['destination'].split("/")[-1]))
         print('ASM Policy Name: %s\nEnforcement Mode: %s' % (asmPolicyDict[virtual]['name'], asmPolicyDict[virtual]['enforcementMode']))
         print('ASM Policy Last Change: %s' % (asmPolicyDict[virtual]['versionDatetime']))
-        asmPolicyGeneralSettings = bip.get('https://%s/mgmt/tm/asm/policies/%s/general' % (args.bigip, asmPolicyDict[virtual]['id'])).json()
-        if asmPolicyGeneralSettings['trustXff']:
-            print('Trust XFF enabled')
-            for customXff in asmPolicyGeneralSettings.get('customXffHeaders'):
-                print('Custom XFF Header: %s' % (customXff))
+        if bipSystemInfo['shortVersion'] >= 12.0:
+            pass
         else:
-            print('Trust XFF disabled')
+            policyBuilderSettings = bip.get('https://%s/mgmt/tm/asm/policies/%s/policy-builder/' % (args.bigip, asmPolicyDict[virtual]['id'])).json()
+            if policyBuilderSettings['enablePolicyBuilder']:
+                print ('Policy Builder Enabled')
+            else:
+                print ('Policy Builder Disabled')
+        asmPolicyGeneralSettings = bip.get('https://%s/mgmt/tm/asm/policies/%s/general' % (args.bigip, asmPolicyDict[virtual]['id'])).json()
+        if asmPolicyGeneralSettings['code'] != 501:
+            if asmPolicyGeneralSettings['trustXff']:
+                print('Trust XFF enabled')
+                for customXff in asmPolicyGeneralSettings.get('customXffHeaders'):
+                    print('Custom XFF Header: %s' % (customXff))
+            else:
+                print('Trust XFF disabled')
+        else:
+            if asmPolicyDict[virtual]['trustXff']:
+                print('Trust XFF enabled')
+                for customXff in asmPolicyDict.get('customXffHeaders'):
+                    print('Custom XFF Header: %s' % (customXff))
+            else:
+                print('Trust XFF disabled')
         if ltmVirtualDict[virtual].get('securityLogProfiles'):
             for logProfile in ltmVirtualDict[virtual]['securityLogProfiles']:
                 print('Log Profile: %s' % (logProfile))
@@ -177,17 +197,11 @@ if ltmVirtualsWithoutAsm:
         print virtual
 
 ### BOX GLOBAL HEALTH CHECK
-licenseWithNesting = bip.get('https://%s/mgmt/tm/sys/license' % (args.bigip)).json()
-license = licenseWithNesting['entries']['https://localhost/mgmt/tm/sys/license/0']['nestedStats']['entries']
+licenseCheckPayload = {'command':'run', 'utilCmdArgs': '-c \'grep trust /config/bigip.license\''}
+licenseCheck = bip.post('https://%s/mgmt/tm/util/bash' % (args.bigip), headers=contentJsonHeader, data=json.dumps(licenseCheckPayload)).json()
 ipIntelligenceLicensed = False
-if license.get('https://localhost/mgmt/tm/sys/license/0/time-limited-modules'):
-    timeLimitedModules = license['https://localhost/mgmt/tm/sys/license/0/time-limited-modules']
-    for entry in timeLimitedModules['nestedStats']['entries'].keys():
-        if 'Intelligence' in entry:
-            ipIntelligenceLicensed = True
-            ipIntelStart = timeLimitedModules['nestedStats']['entries'][entry]['nestedStats']['entries']['timeStart']['description']
-            ipIntelEnd = timeLimitedModules['nestedStats']['entries'][entry]['nestedStats']['entries']['timeEnd']['description']
-
+if licenseCheck['commandResult'] != '':
+    ipIntelEnd = licenseCheck['commandResult'].split('_')[0]
 if ipIntelligenceLicensed:
     print ('IP Intelligence Licensed - Start: %s End: %s' % (ipIntelStart, ipIntelEnd))
     checkBrightCloudPayload = {'command': 'run', 'utilCmdArgs': '-c \'nc -z -w3 vector.brightcloud.com 443\''}
@@ -200,11 +214,11 @@ if ipIntelligenceLicensed:
         print ('Unsuccessful Attempt to Reach Brightcloud')
     else:
         print ('Unknown Error in reaching Brightcloud: %s' % (checkBrightCloud['commandResult']))
+else:
+    print ('BIG-IP IP Intelligence not licensed')
 
 if args.hostport:
-    print ('args.hostport: %s' % (args.hostport))
     for hostPort in args.hostport:
-        print ('hostPort: %s' % (hostPort))
         print ('Checking Host: %s Port: %s for reachability' % (hostPort.split(',')[0], hostPort.split(',')[1]))
         checkHostPayload = {'command': 'run', 'utilCmdArgs': '-c \'nc -z -w3 %s %s\'' % (hostPort.split(',')[0], hostPort.split(',')[1])}
         checkHost = bip.post('https://%s/mgmt/tm/util/bash' % (args.bigip), headers=contentJsonHeader, data=json.dumps(checkHostPayload)).json()
