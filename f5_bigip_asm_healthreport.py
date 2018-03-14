@@ -148,11 +148,14 @@ for virtual in ltmVirtuals['items']:
     print ('Reading virtual: %s' % (virtual['fullPath']))
     ltmVirtualDict[virtual['fullPath']] = virtual
 
-asmPolicyDict = {}
-asmPolicies = bip.get('https://%s/mgmt/tm/asm/policies' % (args.bigip)).json()
-for policy in asmPolicies['items']:
-    for virtualServer in policy['virtualServers']:
-        asmPolicyDict[virtualServer] = policy
+if 'asm' in bipSystemInfo['provisionedModules']:
+    asmPolicyDict = {}
+    asmPolicies = bip.get('https://%s/mgmt/tm/asm/policies' % (args.bigip)).json()
+    for policy in asmPolicies['items']:
+        for virtualServer in policy['virtualServers']:
+            asmPolicyDict[virtualServer] = policy
+else:
+    print ('ASM Module Not Provisioned')
 
 ltmVirtualsWithoutAsm = []
 for virtual in ltmVirtualDict.keys():
@@ -169,7 +172,8 @@ for virtual in ltmVirtualDict.keys():
             else:
                 print ('Policy Builder Disabled')
         asmPolicyGeneralSettings = bip.get('https://%s/mgmt/tm/asm/policies/%s/general' % (args.bigip, asmPolicyDict[virtual]['id'])).json()
-        if asmPolicyGeneralSettings['code'] != 501:
+        print ('asmPolicyGeneralSettings: %s' % (json.dumps(asmPolicyGeneralSettings)))
+        if asmPolicyGeneralSettings.get('code') != 501:
             if asmPolicyGeneralSettings['trustXff']:
                 print('Trust XFF enabled')
                 for customXff in asmPolicyGeneralSettings.get('customXffHeaders'):
@@ -202,12 +206,17 @@ licenseCheck = bip.post('https://%s/mgmt/tm/util/bash' % (args.bigip), headers=c
 ipIntelligenceLicensed = False
 if licenseCheck['commandResult'] != '':
     ipIntelEnd = licenseCheck['commandResult'].split('_')[0]
+    if int(bipSystemInfo['systemDate']) > int(ipIntelEnd):
+        print ('IP Intelligence License Appears to be Expired - End Date: %s - System Date: %s' % (ipIntelEnd, bipSystemInfo['systemDate']))
+    else:
+        print ('IP Intelligence License Appears Valid - End Date: %s - System Date: %s' % (ipIntelEnd, bipSystemInfo['systemDate']))
+        ipIntelligenceLicensed = True
 if ipIntelligenceLicensed:
-    print ('IP Intelligence Licensed - Start: %s End: %s' % (ipIntelStart, ipIntelEnd))
+    print ('IP Intelligence Licensed - End: %s' % (ipIntelEnd))
     checkBrightCloudPayload = {'command': 'run', 'utilCmdArgs': '-c \'nc -z -w3 vector.brightcloud.com 443\''}
     checkBrightCloud = bip.post('https://%s/mgmt/tm/util/bash' % (args.bigip), headers=contentJsonHeader, data=json.dumps(checkBrightCloudPayload)).json()
     if 'getaddrinfo' in checkBrightCloud['commandResult'] or 'name resolution' in checkBrightCloud['commandResult']:
-        print ('Unsuccessful attempt to reach Brightcloud ue to name resolution problem')
+        print ('Unsuccessful attempt to reach Brightcloud due to name resolution problem')
     elif 'succeeded' in checkBrightCloud['commandResult']:
         print ('Successfully Reached Brightcloud')
     elif checkBrightCloud['commandResult'] == '':
