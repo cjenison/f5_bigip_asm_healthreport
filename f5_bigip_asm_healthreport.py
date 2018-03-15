@@ -85,7 +85,7 @@ def get_system_info(bigip, username, password):
         if module.get('level'):
             if module['level'] != 'none':
                 provisionedModules.append(module['name'])
-    print ('Provisioned Modules: %s' % (provisionedModules))
+    print ('Provisioned Modules: %s' % (json.dumps(provisionedModules)))
     systemInfo['provisionedModules'] = provisionedModules
     systemInfo['baseMac'] = hardware['entries']['https://localhost/mgmt/tm/sys/hardware/platform']['nestedStats']['entries']['https://localhost/mgmt/tm/sys/hardware/platform/0']['nestedStats']['entries']['baseMac']['description']
     systemInfo['marketingName'] = hardware['entries']['https://localhost/mgmt/tm/sys/hardware/platform']['nestedStats']['entries']['https://localhost/mgmt/tm/sys/hardware/platform/0']['nestedStats']['entries']['marketingName']['description']
@@ -172,7 +172,6 @@ for virtual in ltmVirtualDict.keys():
             else:
                 print ('Policy Builder Disabled')
         asmPolicyGeneralSettings = bip.get('https://%s/mgmt/tm/asm/policies/%s/general' % (args.bigip, asmPolicyDict[virtual]['id'])).json()
-        print ('asmPolicyGeneralSettings: %s' % (json.dumps(asmPolicyGeneralSettings)))
         if asmPolicyGeneralSettings.get('code') != 501:
             if asmPolicyGeneralSettings['trustXff']:
                 print('Trust XFF enabled')
@@ -187,6 +186,18 @@ for virtual in ltmVirtualDict.keys():
                     print('Custom XFF Header: %s' % (customXff))
             else:
                 print('Trust XFF disabled')
+        violationsBlocking = bip.get('https://%s/mgmt/tm/asm/policies/%s/blocking-settings/violations/' % (args.bigip, asmPolicyDict[virtual]['id'])).json()
+        for violation in violationsBlocking['items']:
+            if violation['description'] == 'Access from malicious IP address':
+                if violation['block']:
+                    print ('Access from malicious IP Address - Blocking Enabled')
+                else:
+                    print ('Access from malicious IP Address - Blocking Disabled')
+                if violation['alarm']:
+                    print ('Access from malicious IP Address - Alarm Enabled')
+                else:
+                    print ('Access from malicious IP Address - Alarm Disabled')
+
         if ltmVirtualDict[virtual].get('securityLogProfiles'):
             for logProfile in ltmVirtualDict[virtual]['securityLogProfiles']:
                 print('Log Profile: %s' % (logProfile))
@@ -211,8 +222,9 @@ if licenseCheck['commandResult'] != '':
     else:
         print ('IP Intelligence License Appears Valid - End Date: %s - System Date: %s' % (ipIntelEnd, bipSystemInfo['systemDate']))
         ipIntelligenceLicensed = True
+        if int(bipSystemInfo['systemDate']) + 14 > int(ipIntelEnd):
+            print ('IP Intelligence Licensed Expiring within 14 days')
 if ipIntelligenceLicensed:
-    print ('IP Intelligence Licensed - End: %s' % (ipIntelEnd))
     checkBrightCloudPayload = {'command': 'run', 'utilCmdArgs': '-c \'nc -z -w3 vector.brightcloud.com 443\''}
     checkBrightCloud = bip.post('https://%s/mgmt/tm/util/bash' % (args.bigip), headers=contentJsonHeader, data=json.dumps(checkBrightCloudPayload)).json()
     if 'getaddrinfo' in checkBrightCloud['commandResult'] or 'name resolution' in checkBrightCloud['commandResult']:
