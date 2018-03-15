@@ -9,6 +9,7 @@ import requests
 import json
 import copy
 import getpass
+import re
 from time import sleep
 
 parser = argparse.ArgumentParser(description='A tool to detach ASM policies from virtual to allow some global change to ASM configuration, then restore policies to virtuals')
@@ -117,6 +118,10 @@ def get_system_info(bigip, username, password):
     systemInfo['marketingName'] = hardware['entries']['https://localhost/mgmt/tm/sys/hardware/platform']['nestedStats']['entries']['https://localhost/mgmt/tm/sys/hardware/platform/0']['nestedStats']['entries']['marketingName']['description']
     systemDatePayload = {'command':'run', 'utilCmdArgs': '-c \'date +%Y%m%d\''}
     systemInfo['systemDate'] = bip.post('https://%s/mgmt/tm/util/bash' % (bigip), headers=contentJsonHeader, data=json.dumps(systemDatePayload)).json()['commandResult'].strip()
+    syncStatusPayload = {'command':'run', 'utilCmdArgs': '-c \'tmsh show cm sync-status\''}
+    systemInfo['syncStatus'] = bip.post('https://%s/mgmt/tm/util/bash' % (bigip), headers=contentJsonHeader, data=json.dumps(syncStatusPayload)).json()['commandResult']
+    syncStatusRegex = re.search('Color\s+(\S+)', systemInfo['syncStatus'])
+    systemInfo['syncStatusColor'] = syncStatusRegex.group(0)
     systemInfo['hostname'] = globalSettings['hostname']
     devices = bip.get('https://%s/mgmt/tm/cm/device' % (bigip)).json()
     for device in devices['items']:
@@ -135,6 +140,11 @@ def bigip_asm_device_check(bigip):
         bip.headers.update(bigip['authHeader'])
     else:
         bip.auth = (bigip['user'], bigip['pass'])
+    if bigip['syncStatusColor'] != 'green':
+        print ('System Out of Sync with Peer - Status:')
+        print bigip['syncStatus']
+    else:
+        print ('System In Sync with Peer')
     licenseCheckPayload = {'command':'run', 'utilCmdArgs': '-c \'grep trust /config/bigip.license\''}
     licenseCheck = bip.post('https://%s/mgmt/tm/util/bash' % (bigip['ipOrHostname']), headers=contentJsonHeader, data=json.dumps(licenseCheckPayload)).json()
     ipIntelligenceLicensed = False
