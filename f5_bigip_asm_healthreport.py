@@ -116,7 +116,7 @@ def get_system_info(bigip, username, password):
     systemInfo['baseMac'] = hardware['entries']['https://localhost/mgmt/tm/sys/hardware/platform']['nestedStats']['entries']['https://localhost/mgmt/tm/sys/hardware/platform/0']['nestedStats']['entries']['baseMac']['description']
     systemInfo['marketingName'] = hardware['entries']['https://localhost/mgmt/tm/sys/hardware/platform']['nestedStats']['entries']['https://localhost/mgmt/tm/sys/hardware/platform/0']['nestedStats']['entries']['marketingName']['description']
     systemDatePayload = {'command':'run', 'utilCmdArgs': '-c \'date +%Y%m%d\''}
-    systemInfo['systemDate'] = bip.post('https://%s/mgmt/tm/util/bash' % (bigip), headers=contentJsonHeader, data=json.dumps(systemDatePayload)).json()['commandResult']
+    systemInfo['systemDate'] = bip.post('https://%s/mgmt/tm/util/bash' % (bigip), headers=contentJsonHeader, data=json.dumps(systemDatePayload)).json()['commandResult'].strip()
     systemInfo['hostname'] = globalSettings['hostname']
     devices = bip.get('https://%s/mgmt/tm/cm/device' % (bigip)).json()
     for device in devices['items']:
@@ -284,7 +284,6 @@ if args.bigip:
 else:
     with open(args.systemlistfile, 'r') as systems:
         for line in systems:
-            print line
             pairName = line.split(':')[0]
             bigipAaddr = line.split(':')[1].split(',')[0].strip()
             bigipBaddr = line.split(':')[1].split(',')[1].strip()
@@ -299,8 +298,11 @@ else:
             else:
                 standbyBigip = bigipB
             print ('Pair Name: %s - Active BIG-IP: %s - Standby BIG-IP: %s' % (pairName, activeBigip['hostname'], standbyBigip['hostname']))
+            print ('--Active System Info--')
             bigip_asm_device_check(activeBigip)
+            print ('--Standby System Info--')
             bigip_asm_device_check(standbyBigip)
+            print ('--Active Virtual(s) Report--')
             bigip_asm_virtual_report(activeBigip)
 
 
