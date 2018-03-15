@@ -74,10 +74,10 @@ def get_system_info(bigip, username, password):
     systemInfo = dict()
     systemInfo['ipOrHostname'] = bigip
     systemInfo['user'] = username
-    systemInfo['pass'] = password
+    systemInfo['pass'] = get_confirmed_password(bigip, username, password)
     unknownbip = requests.session()
     unknownbip.verify = False
-    unknownbip.auth = (username, password)
+    unknownbip.auth = (username, systemInfo['pass'])
     version = unknownbip.get('https://%s/mgmt/tm/sys/version/' % (bigip)).json()
     bip = requests.session()
     bip.verify = False
@@ -91,11 +91,11 @@ def get_system_info(bigip, username, password):
                     systemInfo['version'] = volume['version']
     systemInfo['shortVersion'] = float('%s.%s' % (systemInfo['version'].split('.')[0], systemInfo['version'].split('.')[1]))
     if systemInfo['shortVersion'] >= 11.6:
-        systemInfo['authToken'] = get_auth_token(bigip, args.user, password)
+        systemInfo['authToken'] = get_auth_token(bigip, systemInfo['user'], systemInfo['pass'])
         systemInfo['authHeader'] = {'X-F5-Auth-Token': systemInfo['authToken']}
         bip.headers.update(systemInfo['authHeader'])
     else:
-        bip.auth = (args.user, password)
+        bip.auth = (systemInfo['user'], systemInfo['pass'])
         systemInfo['authToken'] = None
         systemInfo['authHeader'] = None
     #bip.headers.update(authHeader)
@@ -283,12 +283,10 @@ elif args.passfile:
 else:
    unverifiedPassword = getpass.getpass('Enter Password for: %s: ' % (args.user))
 
-bip = requests.session()
-bip.verify = False
 contentJsonHeader = {'Content-Type': "application/json"}
 
 if args.bigip:
-    singleBigip
+    singleBigip = get_system_info(args.bigip, args.user, unverifiedPassword)
     bigip_asm_device_check(singleBigip)
     bigip_asm_virtual_report(singleBigip)
 else:
