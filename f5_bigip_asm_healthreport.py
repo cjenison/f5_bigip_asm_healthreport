@@ -12,11 +12,11 @@ import getpass
 import re
 from time import sleep
 
-parser = argparse.ArgumentParser(description='A tool to detach ASM policies from virtual to allow some global change to ASM configuration, then restore policies to virtuals')
+parser = argparse.ArgumentParser(description='A tool to give summary/health data on one or more BIG-IP ASM systems')
 parser.add_argument('--user', '-u', help='username to use for authentication', required=True)
 mode = parser.add_mutually_exclusive_group()
 mode.add_argument('--bigip', '-b', help='IP or hostname of BIG-IP Management or Self IP')
-mode.add_argument('--systemlistfile', '-s', help='Input file containing IP\'s or hostnames of BIG-IP systems')
+mode.add_argument('--systemlistfile', '-s', help='Input file containing IP\'s or hostnames of BIG-IP systems \(Format: pairName: ipOrHostname1, ipOrHostname2\)')
 passwdoption = parser.add_mutually_exclusive_group()
 passwdoption.add_argument('--password', '-p', help='Supply Password as command line argument \(dangerous due to shell history\)')
 passwdoption.add_argument('--passfile', '-pf', help='Obtain password from a text file \(with password string as the only contents of file\)')
@@ -55,14 +55,18 @@ def get_confirmed_password(bigip, username, password):
             credentialsValidated = True
             return password
         elif testRequest.status_code == 401:
-            print ('Invalid credentials for user %s' % (user))
-            passwordRetryQuery = 'Retry with new password (No to exit)?'
-            if query_yes_no(passwordRetryQuery, default="yes"):
-                password = getpass.getpass('Re-enter Password for %s' % (user))
-                bip.auth = (username, password)
-            else:
-                print('Exiting due to invalid authentication credentials')
+            if args.password or args.passfile:
+                print ('Invalid credentials passed via command line argument or as file content; Exiting...')
                 quit()
+            else:
+                print ('Invalid credentials for user %s' % (user))
+                passwordRetryQuery = 'Retry with new password (No to exit)?'
+                if query_yes_no(passwordRetryQuery, default="yes"):
+                    password = getpass.getpass('Re-enter Password for %s' % (user))
+                    bip.auth = (username, password)
+                else:
+                    print('Exiting due to invalid authentication credentials')
+                    quit()
         else:
             print('Unexpected Error from test request to validate credentials')
             print('Status Code: %s' % (testRequest.status_code))
