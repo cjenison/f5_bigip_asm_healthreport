@@ -10,6 +10,7 @@ import json
 import copy
 import getpass
 import re
+import xlsxwriter
 from time import sleep
 
 parser = argparse.ArgumentParser(description='A tool to give summary/health data on one or more BIG-IP ASM systems')
@@ -21,6 +22,7 @@ passwdoption = parser.add_mutually_exclusive_group()
 passwdoption.add_argument('--password', '-p', help='Supply Password as command line argument \(dangerous due to shell history\)')
 passwdoption.add_argument('--passfile', '-pf', help='Obtain password from a text file \(with password string as the only contents of file\)')
 parser.add_argument('--hostport', '-hp', help='List of NameIP:port pairs that will be checked with nc \(Example: logserver,514\) for reachability', nargs='*')
+parser.add_argument('--xlsx', '-x', help='Produce XLSX Output File')
 
 args = parser.parse_args()
 
@@ -125,7 +127,7 @@ def get_system_info(bigip, username, password):
     syncStatusPayload = {'command':'run', 'utilCmdArgs': '-c \'tmsh show cm sync-status\''}
     systemInfo['syncStatus'] = bip.post('https://%s/mgmt/tm/util/bash' % (bigip), headers=contentJsonHeader, data=json.dumps(syncStatusPayload)).json()['commandResult']
     syncStatusRegex = re.search('Color\s+(\S+)', systemInfo['syncStatus'])
-    systemInfo['syncStatusColor'] = syncStatusRegex.group(0)
+    systemInfo['syncStatusColor'] = syncStatusRegex.group(1)
     systemInfo['hostname'] = globalSettings['hostname']
     devices = bip.get('https://%s/mgmt/tm/cm/device' % (bigip)).json()
     for device in devices['items']:
@@ -138,6 +140,7 @@ def get_system_info(bigip, username, password):
 
 ### BOX GLOBAL HEALTH CHECK
 def bigip_asm_device_check(bigip):
+    global systemsRow
     bip = requests.session()
     bip.verify = False
     if bigip['authHeader']:
@@ -151,44 +154,67 @@ def bigip_asm_device_check(bigip):
         print ('System In Sync with Peer')
     licenseCheckPayload = {'command':'run', 'utilCmdArgs': '-c \'grep trust /config/bigip.license\''}
     licenseCheck = bip.post('https://%s/mgmt/tm/util/bash' % (bigip['ipOrHostname']), headers=contentJsonHeader, data=json.dumps(licenseCheckPayload)).json()
-    ipIntelligenceLicensed = False
+    bigip['ipIntelligenceLicensed'] = False
     if licenseCheck['commandResult'] != '':
-        ipIntelEnd = licenseCheck['commandResult'].split('_')[0]
-        if int(bigip['systemDate']) > int(ipIntelEnd):
-            print ('IP Intelligence License Appears to be Expired - End Date: %s - System Date: %s' % (ipIntelEnd, bigip['systemDate']))
+        bigip['ipIntelEnd'] = licenseCheck['commandResult'].split('_')[0]
+        if int(bigip['systemDate']) > int(bigip['ipIntelEnd']):
+            print ('IP Intelligence License Appears to be Expired - End Date: %s - System Date: %s' % (bigip['ipIntelEnd'], bigip['systemDate']))
         else:
-            print ('IP Intelligence License Appears Valid - End Date: %s - System Date: %s' % (ipIntelEnd, bigip['systemDate']))
-            ipIntelligenceLicensed = True
-            if int(bigip['systemDate']) + 14 > int(ipIntelEnd):
+            print ('IP Intelligence License Appears Valid - End Date: %s - System Date: %s' % (bigip['ipIntelEnd'], bigip['systemDate']))
+            bigip['ipIntelligenceLicensed'] = True
+            if int(bigip['systemDate']) + 14 > int(bigip['ipIntelEnd']):
                 print ('IP Intelligence Licensed Expiring within 14 days')
-    if ipIntelligenceLicensed:
+    if bigip['ipIntelligenceLicensed']:
         checkBrightCloudPayload = {'command': 'run', 'utilCmdArgs': '-c \'nc -z -w3 vector.brightcloud.com 443\''}
         checkBrightCloud = bip.post('https://%s/mgmt/tm/util/bash' % (bigip['ipOrHostname']), headers=contentJsonHeader, data=json.dumps(checkBrightCloudPayload)).json()
         if 'getaddrinfo' in checkBrightCloud['commandResult'] or 'name resolution' in checkBrightCloud['commandResult']:
             print ('Unsuccessful attempt to reach Brightcloud due to name resolution problem')
+            bigip['checkBrightCloud'] = False
         elif 'succeeded' in checkBrightCloud['commandResult']:
             print ('Successfully Reached Brightcloud')
         elif checkBrightCloud['commandResult'] == '':
             print ('Unsuccessful Attempt to Reach Brightcloud')
+            bigip['checkBrightCloud'] = False
         else:
             print ('Unknown Error in reaching Brightcloud: %s' % (checkBrightCloud['commandResult']))
+            bigip['checkBrightCloud'] = False
     else:
         print ('BIG-IP IP Intelligence not licensed')
     if args.hostport:
+        bigip['hostPortCheck'] = list()
         for hostPort in args.hostport:
             print ('Checking Host: %s Port: %s for reachability' % (hostPort.split(',')[0], hostPort.split(',')[1]))
             checkHostPayload = {'command': 'run', 'utilCmdArgs': '-c \'nc -z -w3 %s %s\'' % (hostPort.split(',')[0], hostPort.split(',')[1])}
             checkHost = bip.post('https://%s/mgmt/tm/util/bash' % (bigip['ipOrHostname']), headers=contentJsonHeader, data=json.dumps(checkHostPayload)).json()
             if 'getaddrinfo' in checkHost['commandResult']:
                 print ('Unsuccessful attempt to reach: %s %s due to name resolution problem' % (hostPort.split(',')[0], hostPort.split(',')[1]))
+                bigip['hostPortCheck'].append({hostPort : False})
             elif 'succeeded' in checkHost['commandResult']:
                 print ('Successfully Reached Host: %s %s' % (hostPort.split(',')[0], hostPort.split(',')[1]))
+                bigip['hostPortCheck'].append({hostPort : True})
             elif checkHost['commandResult'] == '':
                 print ('Unsuccessful Attempt to Reach Host: %s %s' % (hostPort.split(',')[0], hostPort.split(',')[1]))
+                bigip['hostPortCheck'].append({hostPort : False})
             else:
                 print ('Unknown Error in reaching %s %s: %s' % (hostPort.split(',')[0], hostPort.split(',')[1], checkBrightCloud['commandResult']))
+                bigip['hostPortCheck'].append({hostPort : False})
+    if args.xlsx:
+        systemsSheet.write(systemsRow, 0, bigip['hostname'])
+        systemsSheet.write(systemsRow, 1, bigip['failoverState'])
+        systemsSheet.write(systemsRow, 2, bigip['marketingName'])
+        systemsSheet.write(systemsRow, 3, bigip['version'])
+        systemsSheet.write(systemsRow, 4, json.dumps(bigip['provisionedModules']))
+        systemsSheet.write(systemsRow, 5, bigip['ipIntelligenceLicensed'])
+        if bigip.get('ipIntelEnd'):
+            systemsSheet.write(systemsRow, 6, bigip['ipIntelEnd'])
+        else:
+            systemsSheet.write(systemsRow, 6, bigip['ipIntelEnd'])
+        systemsSheet.write(systemsRow, 7, bigip['syncStatusColor'])
+        systemsRow += 1
 
 def bigip_asm_virtual_report(bigip):
+    global asmVirtualsRow
+    global noAsmVirtualsRow
     bip = requests.session()
     bip.verify = False
     if bigip['authHeader']:
@@ -239,15 +265,19 @@ def bigip_asm_virtual_report(bigip):
                         print('Custom XFF Header: %s' % (customXff))
                 else:
                     print('Trust XFF disabled')
+            maliciousIpBlock = False
+            maliciousIpAlarm = False
             violationsBlocking = bip.get('https://%s/mgmt/tm/asm/policies/%s/blocking-settings/violations/' % (bigip['ipOrHostname'], asmPolicyDict[virtual]['id'])).json()
             for violation in violationsBlocking['items']:
                 if violation['description'] == 'Access from malicious IP address':
                     if violation['block']:
                         print ('Access from malicious IP Address - Blocking Enabled')
+                        maliciousIpBlock = True
                     else:
                         print ('Access from malicious IP Address - Blocking Disabled')
                     if violation['alarm']:
                         print ('Access from malicious IP Address - Alarm Enabled')
+                        maliciousIpAlarm = True
                     else:
                         print ('Access from malicious IP Address - Alarm Disabled')
 
@@ -256,6 +286,22 @@ def bigip_asm_virtual_report(bigip):
                     print('Log Profile: %s' % (logProfile))
             else:
                 print('Log Profile Not Attached')
+            if args.xlsx:
+                asmVirtualsSheet.write(asmVirtualsRow, 0, bigip['hostname'])
+                asmVirtualsSheet.write(asmVirtualsRow, 1, ltmVirtualDict[virtual]['name'])
+                asmVirtualsSheet.write(asmVirtualsRow, 2, ltmVirtualDict[virtual]['fullPath'])
+                asmVirtualsSheet.write(asmVirtualsRow, 3, ltmVirtualDict[virtual]['destination'])
+                asmVirtualsSheet.write(asmVirtualsRow, 4, asmPolicyDict[virtual]['name'])
+                asmVirtualsSheet.write(asmVirtualsRow, 5, asmPolicyDict[virtual]['enforcementMode'])
+                if len(ltmVirtualDict[virtual]['securityLogProfiles']) == 1:
+                    asmVirtualsSheet.write(asmVirtualsRow, 6, json.dumps(ltmVirtualDict[virtual]['securityLogProfiles'][0]))
+                else:
+                    asmVirtualsSheet.write(asmVirtualsRow, 6, json.dumps(ltmVirtualDict[virtual]['securityLogProfiles']))
+                asmVirtualsSheet.write(asmVirtualsRow, 7, policyBuilderSettings['enablePolicyBuilder'])
+                asmVirtualsSheet.write(asmVirtualsRow, 8, asmPolicyDict[virtual]['trustXff'])
+                asmVirtualsSheet.write(asmVirtualsRow, 9, maliciousIpBlock)
+                asmVirtualsSheet.write(asmVirtualsRow, 10, maliciousIpAlarm)
+                asmVirtualsRow += 1
         else:
             ltmVirtualsWithoutAsm.append(virtual)
 
@@ -263,6 +309,12 @@ def bigip_asm_virtual_report(bigip):
         print ('--\nLTM Virtuals Without an ASM Policy')
         for virtual in ltmVirtualsWithoutAsm:
             print virtual
+            if args.xlsx:
+                noAsmVirtualsSheet.write(noAsmVirtualsRow, 0, bigip['hostname'])
+                noAsmVirtualsSheet.write(noAsmVirtualsRow, 1, ltmVirtualDict[virtual]['name'])
+                noAsmVirtualsSheet.write(noAsmVirtualsRow, 2, ltmVirtualDict[virtual]['fullPath'])
+                noAsmVirtualsSheet.write(noAsmVirtualsRow, 3, ltmVirtualDict[virtual]['destination'])
+                noAsmVirtualsRow += 1
 
 def get_auth_token(bigip, username, password):
     authbip = requests.session()
@@ -288,6 +340,47 @@ else:
    unverifiedPassword = getpass.getpass('Enter Password for: %s: ' % (args.user))
 
 contentJsonHeader = {'Content-Type': "application/json"}
+
+if args.xlsx:
+    workbook = xlsxwriter.Workbook(args.xlsx)
+
+systemsRow = 0
+asmVirtualsRow = 0
+noAsmVirtualsRow = 0
+
+if args.xlsx:
+    bold = workbook.add_format({'bold': True})
+    systemsSheet = workbook.add_worksheet('Systems')
+    systemsSheet.write('A1', 'Hostname', bold)
+    systemsSheet.write('B1', 'HA Status', bold)
+    systemsSheet.write('C1', 'Model', bold)#
+    systemsSheet.write('D1', 'Version', bold)
+    systemsSheet.write('E1', 'Provisioned Modules', bold)
+    systemsSheet.write('F1', 'IP Intelligence Licensed', bold)
+    systemsSheet.write('G1', 'IP Intelligence License End Date', bold)
+    systemsSheet.write('H1', 'Sync Status', bold)
+    systemsRow = 1
+    asmVirtualsSheet = workbook.add_worksheet('Virtual Servers with ASM')
+    asmVirtualsSheet.write('A1', 'Hostname', bold)
+    asmVirtualsSheet.write('B1', 'Virtual Name', bold)
+    asmVirtualsSheet.write('C1', 'Virtual FullPath', bold)
+    asmVirtualsSheet.write('D1', 'Virtual Destination', bold)
+    asmVirtualsSheet.write('E1', 'ASM Policy Name', bold)
+    asmVirtualsSheet.write('F1', 'ASM Enforcement Mode', bold)
+    asmVirtualsSheet.write('G1', 'ASM Logging Profile', bold)
+    asmVirtualsSheet.write('H1', 'ASM Policy Builder', bold)
+    asmVirtualsSheet.write('I1', 'ASM Trust XFF', bold)
+    asmVirtualsSheet.write('J1', 'ASM Malicious IP Blocking', bold)
+    asmVirtualsSheet.write('K1', 'ASM Malicious IP Alarm', bold)
+    #asmVirtualsSheet.write()
+    asmVirtualsRow = 1
+    noAsmVirtualsSheet = workbook.add_worksheet('Virtual Servers without ASM')
+    noAsmVirtualsSheet.write('A1', 'Hostname', bold)
+    noAsmVirtualsSheet.write('B1', 'Virtual Name', bold)
+    noAsmVirtualsSheet.write('C1', 'Virtual FullPath', bold)
+    noAsmVirtualsSheet.write('D1', 'Virtual Destination', bold)
+    #noAsmVirtualsSheet.write()
+    noAsmVirtualsRow = 1
 
 if args.bigip:
     singleBigip = get_system_info(args.bigip, args.user, unverifiedPassword)
@@ -317,7 +410,8 @@ else:
             print ('--Active Virtual(s) Report--')
             bigip_asm_virtual_report(activeBigip)
 
-
+if args.xlsx:
+    workbook.close()
 
 
 #if query_yes_no('Ready to Proceed with restoration of ASM Policy to Virtuals?', default="no"):
