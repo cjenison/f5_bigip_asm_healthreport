@@ -172,6 +172,7 @@ def bigip_asm_device_check(bigip):
             bigip['checkBrightCloud'] = False
         elif 'succeeded' in checkBrightCloud['commandResult']:
             print ('Successfully Reached Brightcloud')
+            bigip['checkBrightCloud'] = True
         elif checkBrightCloud['commandResult'] == '':
             print ('Unsuccessful Attempt to Reach Brightcloud')
             bigip['checkBrightCloud'] = False
@@ -186,30 +187,53 @@ def bigip_asm_device_check(bigip):
             print ('Checking Host: %s Port: %s for reachability' % (hostPort.split(',')[0], hostPort.split(',')[1]))
             checkHostPayload = {'command': 'run', 'utilCmdArgs': '-c \'nc -z -w3 %s %s\'' % (hostPort.split(',')[0], hostPort.split(',')[1])}
             checkHost = bip.post('https://%s/mgmt/tm/util/bash' % (bigip['ipOrHostname']), headers=contentJsonHeader, data=json.dumps(checkHostPayload)).json()
-            if 'getaddrinfo' in checkHost['commandResult']:
-                print ('Unsuccessful attempt to reach: %s %s due to name resolution problem' % (hostPort.split(',')[0], hostPort.split(',')[1]))
-                bigip['hostPortCheck'].append({hostPort : False})
-            elif 'succeeded' in checkHost['commandResult']:
-                print ('Successfully Reached Host: %s %s' % (hostPort.split(',')[0], hostPort.split(',')[1]))
-                bigip['hostPortCheck'].append({hostPort : True})
-            elif checkHost['commandResult'] == '':
-                print ('Unsuccessful Attempt to Reach Host: %s %s' % (hostPort.split(',')[0], hostPort.split(',')[1]))
-                bigip['hostPortCheck'].append({hostPort : False})
+            if checkHost.get('commandResult'):
+                if 'getaddrinfo' in checkHost['commandResult']:
+                    print ('Unsuccessful attempt to reach: %s %s due to name resolution problem' % (hostPort.split(',')[0], hostPort.split(',')[1]))
+                    bigip['hostPortCheck'].append({hostPort : False})
+                elif 'succeeded' in checkHost['commandResult']:
+                    print ('Successfully Reached Host: %s %s' % (hostPort.split(',')[0], hostPort.split(',')[1]))
+                    bigip['hostPortCheck'].append({hostPort : True})
+                elif checkHost['commandResult'] == '':
+                    print ('Unsuccessful Attempt to Reach Host: %s %s' % (hostPort.split(',')[0], hostPort.split(',')[1]))
+                    bigip['hostPortCheck'].append({hostPort : False})
+                else:
+                    print ('Unknown Error in reaching %s %s: %s' % (hostPort.split(',')[0], hostPort.split(',')[1], checkBrightCloud['commandResult']))
+                    bigip['hostPortCheck'].append({hostPort : False})
             else:
-                print ('Unknown Error in reaching %s %s: %s' % (hostPort.split(',')[0], hostPort.split(',')[1], checkBrightCloud['commandResult']))
+                print ('Unknown Error in reaching %s %s' % (hostPort.split(',')[0], hostPort.split(',')[1]))
                 bigip['hostPortCheck'].append({hostPort : False})
+
     if args.xlsx:
         systemsSheet.write(systemsRow, 0, bigip['hostname'])
         systemsSheet.write(systemsRow, 1, bigip['failoverState'])
         systemsSheet.write(systemsRow, 2, bigip['marketingName'])
         systemsSheet.write(systemsRow, 3, bigip['version'])
         systemsSheet.write(systemsRow, 4, json.dumps(bigip['provisionedModules']))
-        systemsSheet.write(systemsRow, 5, bigip['ipIntelligenceLicensed'])
+        if bigip['ipIntelligenceLicensed']:
+            systemsSheet.write(systemsRow, 5, bigip['ipIntelligenceLicensed'])
+        else:
+            systemsSheet.write(systemsRow, 5, bigip['ipIntelligenceLicensed'], redbg)
         if bigip.get('ipIntelEnd'):
             systemsSheet.write(systemsRow, 6, bigip['ipIntelEnd'])
         else:
             systemsSheet.write(systemsRow, 6, bigip['ipIntelEnd'])
-        systemsSheet.write(systemsRow, 7, bigip['syncStatusColor'])
+        if bigip['checkBrightCloud']:
+            systemsSheet.write(systemsRow, 7, bigip['checkBrightCloud'])
+        else:
+            systemsSheet.write(systemsRow, 7, bigip['checkBrightCloud'], redbg)
+        if bigip['syncStatusColor'] == 'green':
+            systemsSheet.write(systemsRow, 8, bigip['syncStatusColor'])
+        else:
+            systemsSheet.write(systemsRow, 8, bigip['syncStatusColor'], redbg)
+        column = 9
+        for hostPortStatus in bigip['hostPortCheck']:
+            hostPortKey = hostPortStatus.keys()[0]
+            if hostPortStatus.get(hostPortKey):
+                systemsSheet.write(systemsRow, column, hostPortStatus.get(hostPortKey))
+            else:
+                systemsSheet.write(systemsRow, column, hostPortStatus.get(hostPortKey), redbg)
+            column += 1
         systemsRow += 1
 
 def bigip_asm_virtual_report(bigip):
@@ -242,10 +266,16 @@ def bigip_asm_virtual_report(bigip):
             print('--\nLTM Virtual: %s - FullPath: %s\nDestination: %s' % (ltmVirtualDict[virtual]['name'], virtual, ltmVirtualDict[virtual]['destination'].split("/")[-1]))
             print('ASM Policy Name: %s\nEnforcement Mode: %s' % (asmPolicyDict[virtual]['name'], asmPolicyDict[virtual]['enforcementMode']))
             print('ASM Policy Last Change: %s' % (asmPolicyDict[virtual]['versionDatetime']))
+            policyBuilderSettings = bip.get('https://%s/mgmt/tm/asm/policies/%s/policy-builder/' % (bigip['ipOrHostname'], asmPolicyDict[virtual]['id'])).json()
             if bigip['shortVersion'] >= 12.0:
-                pass
+                if policyBuilderSettings.get('learningMode'):
+                    if policyBuilderSettings['learningMode'] == 'automatic':
+                        print ('Policy Builder Enabled in Automatic Mode')
+                    elif policyBuilderSettings['learningMode'] == 'manual':
+                        print ('Policy Builder Enabled in Manual Mode')
+                    else:
+                        print ('Policy Builder Disabled')
             else:
-                policyBuilderSettings = bip.get('https://%s/mgmt/tm/asm/policies/%s/policy-builder/' % (bigip['ipOrHostname'], asmPolicyDict[virtual]['id'])).json()
                 if policyBuilderSettings['enablePolicyBuilder']:
                     print ('Policy Builder Enabled')
                 else:
@@ -293,12 +323,18 @@ def bigip_asm_virtual_report(bigip):
                 asmVirtualsSheet.write(asmVirtualsRow, 3, ltmVirtualDict[virtual]['destination'])
                 asmVirtualsSheet.write(asmVirtualsRow, 4, asmPolicyDict[virtual]['name'])
                 asmVirtualsSheet.write(asmVirtualsRow, 5, asmPolicyDict[virtual]['enforcementMode'])
-                if len(ltmVirtualDict[virtual]['securityLogProfiles']) == 1:
-                    asmVirtualsSheet.write(asmVirtualsRow, 6, json.dumps(ltmVirtualDict[virtual]['securityLogProfiles'][0]))
+                if ltmVirtualDict[virtual].get('securityLogProfiles'):
+                    if len(ltmVirtualDict[virtual]['securityLogProfiles']) == 1:
+                        asmVirtualsSheet.write(asmVirtualsRow, 6, ltmVirtualDict[virtual]['securityLogProfiles'][0])
+                    else:
+                        asmVirtualsSheet.write(asmVirtualsRow, 6, json.dumps(ltmVirtualDict[virtual]['securityLogProfiles']))
                 else:
-                    asmVirtualsSheet.write(asmVirtualsRow, 6, json.dumps(ltmVirtualDict[virtual]['securityLogProfiles']))
-                asmVirtualsSheet.write(asmVirtualsRow, 7, policyBuilderSettings['enablePolicyBuilder'])
-                asmVirtualsSheet.write(asmVirtualsRow, 8, asmPolicyDict[virtual]['trustXff'])
+                        asmVirtualsSheet.write(asmVirtualsRow, 6, 'None')
+                if bigip['shortVersion'] < 12.0:
+                    asmVirtualsSheet.write(asmVirtualsRow, 7, policyBuilderSettings['enablePolicyBuilder'])
+                elif bigip['shortVersion'] >= 12.0:
+                    asmVirtualsSheet.write(asmVirtualsRow, 7, policyBuilderSettings['learningMode'])
+                asmVirtualsSheet.write(asmVirtualsRow, 8, asmPolicyGeneralSettings['trustXff'])
                 asmVirtualsSheet.write(asmVirtualsRow, 9, maliciousIpBlock)
                 asmVirtualsSheet.write(asmVirtualsRow, 10, maliciousIpAlarm)
                 asmVirtualsRow += 1
@@ -350,6 +386,8 @@ noAsmVirtualsRow = 0
 
 if args.xlsx:
     bold = workbook.add_format({'bold': True})
+    redbg = workbook.add_format()
+    redbg.set_bg_color('red')
     systemsSheet = workbook.add_worksheet('Systems')
     systemsSheet.write('A1', 'Hostname', bold)
     systemsSheet.write('B1', 'HA Status', bold)
@@ -358,7 +396,12 @@ if args.xlsx:
     systemsSheet.write('E1', 'Provisioned Modules', bold)
     systemsSheet.write('F1', 'IP Intelligence Licensed', bold)
     systemsSheet.write('G1', 'IP Intelligence License End Date', bold)
-    systemsSheet.write('H1', 'Sync Status', bold)
+    systemsSheet.write('H1', 'IP Intelligence BrightCloud Reachable', bold)
+    systemsSheet.write('I1', 'Sync Status', bold)
+    column = 9
+    for hostPort in args.hostport:
+        systemsSheet.write(0, column, 'Check for %s' % (hostPort), bold)
+        column += 1
     systemsRow = 1
     asmVirtualsSheet = workbook.add_worksheet('Virtual Servers with ASM')
     asmVirtualsSheet.write('A1', 'Hostname', bold)
