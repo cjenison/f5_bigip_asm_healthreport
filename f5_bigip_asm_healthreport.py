@@ -77,33 +77,33 @@ def get_confirmed_password(bigip, username, password):
             quit()
 
 def get_system_info(bigip, username, password):
-    systemInfo = dict()
-    systemInfo['ipOrHostname'] = bigip
-    systemInfo['user'] = username
-    systemInfo['pass'] = get_confirmed_password(bigip, username, password)
-    unknownbip = requests.session()
-    unknownbip.verify = False
-    unknownbip.auth = (username, systemInfo['pass'])
-    version = unknownbip.get('https://%s/mgmt/tm/sys/version/' % (bigip)).json()
     bip = requests.session()
     bip.verify = False
+    systemInfo = dict()
+    systemInfo['authToken'] = get_auth_token(bigip, username, password)
+    if systemInfo['authToken']:
+        systemInfo['authHeader'] = {'X-F5-Auth-Token': systemInfo['authToken']}
+        bip.headers.update(systemInfo['authHeader'])
+    else:
+        bip.auth = (username, password)
+        systemInfo['authHeader'] = None
+    systemInfo['ipOrHostname'] = bigip
+    systemInfo['user'] = username
+    systemInfo['pass'] = password
+    versionRaw = bip.get('https://%s/mgmt/tm/sys/version/' % (bigip))
+    if versionRaw.status_code == '401':
+        print ('Invalid Basic Authentication Credentials; Exiting')
+        quit()
+    version = versionRaw.json()
     if version.get('nestedStats'):
         systemInfo['version'] = version['entries']['https://localhost/mgmt/tm/sys/version/0']['nestedStats']['entries']['Version']['description']
     else:
-        volumes = unknownbip.get('https://%s/mgmt/tm/sys/software/volume' % (bigip)).json()
+        volumes = bip.get('https://%s/mgmt/tm/sys/software/volume' % (bigip)).json()
         for volume in volumes['items']:
             if volume.get('active'):
                 if volume['active'] == True:
                     systemInfo['version'] = volume['version']
     systemInfo['shortVersion'] = float('%s.%s' % (systemInfo['version'].split('.')[0], systemInfo['version'].split('.')[1]))
-    if systemInfo['shortVersion'] >= 11.6:
-        systemInfo['authToken'] = get_auth_token(bigip, systemInfo['user'], systemInfo['pass'])
-        systemInfo['authHeader'] = {'X-F5-Auth-Token': systemInfo['authToken']}
-        bip.headers.update(systemInfo['authHeader'])
-    else:
-        bip.auth = (systemInfo['user'], systemInfo['pass'])
-        systemInfo['authToken'] = None
-        systemInfo['authHeader'] = None
     #bip.headers.update(authHeader)
     globalSettings = bip.get('https://%s/mgmt/tm/sys/global-settings/' % (bigip)).json()
     hardware = bip.get('https://%s/mgmt/tm/sys/hardware/' % (bigip)).json()
@@ -360,8 +360,16 @@ def get_auth_token(bigip, username, password):
     payload['password'] = password
     payload['loginProviderName'] = 'tmos'
     authurl = 'https://%s/mgmt/shared/authn/login' % (bigip)
-    token = authbip.post(authurl, headers=contentJsonHeader, auth=(username, password), data=json.dumps(payload)).json()['token']['token']
-    print ('Got Auth Token: %s' % (token))
+    authPost = authbip.post(authurl, headers=contentJsonHeader, auth=(username, password), data=json.dumps(payload)).json()
+    if authPost.get('token'):
+        token = authPost['token']['token']
+        print ('Got Auth Token: %s' % (token))
+    elif authPost.get('code') == 401:
+        print ('Authentication failed due to invalid credentials; Exiting')
+        quit()
+    elif authPost.get('code') == 404:
+        print ('attempt to obtain authentication token failed; will fall back to basic authentication; remote LDAP auth will require configuration of local user account')
+        token = None
     return token
 
 
