@@ -141,7 +141,8 @@ def get_system_info(bigip, username, password):
     for device in devices['items']:
         if device['selfDevice'] == 'true':
             systemInfo['failoverState'] = device['failoverState']
-            systemInfo['unicastAddresses'] = device['unicastAddress']
+            if device.get('unicastAddress'):
+                systemInfo['unicastAddresses'] = device['unicastAddress']
             systemInfo['configsyncIp'] = device['configsyncIp']
             systemInfo['timeLimitedModules'] = device['timeLimitedModules']
     return systemInfo
