@@ -7,7 +7,6 @@ import argparse
 import sys
 import requests
 import json
-import copy
 import getpass
 import re
 import xlsxwriter
@@ -80,7 +79,15 @@ def get_system_info(bigip, username, password):
     bip = requests.session()
     bip.verify = False
     systemInfo = dict()
-    systemInfo['authToken'] = get_auth_token(bigip, username, password)
+    token = get_auth_token(bigip, username, password)
+    if token == 'Fail':
+        systemInfo['authFail'] = True
+        return systemInfo
+    elif token == 'ConnectionError':
+        systemInfo['unreachable'] = True
+        return systemInfo
+    else:
+        systemInfo['authToken'] = token
     if systemInfo['authToken']:
         systemInfo['authHeader'] = {'X-F5-Auth-Token': systemInfo['authToken']}
         bip.headers.update(systemInfo['authHeader'])
@@ -92,8 +99,9 @@ def get_system_info(bigip, username, password):
     systemInfo['pass'] = password
     versionRaw = bip.get('https://%s/mgmt/tm/sys/version/' % (bigip))
     if versionRaw.status_code == '401':
-        print ('Invalid Basic Authentication Credentials; Exiting')
-        quit()
+        print ('Invalid Basic Authentication Credentials')
+        systemInfo['authFail'] = True
+        return systemInfo
     version = versionRaw.json()
     if version.get('nestedStats'):
         systemInfo['version'] = version['entries']['https://localhost/mgmt/tm/sys/version/0']['nestedStats']['entries']['Version']['description']
@@ -360,16 +368,25 @@ def get_auth_token(bigip, username, password):
     payload['password'] = password
     payload['loginProviderName'] = 'tmos'
     authurl = 'https://%s/mgmt/shared/authn/login' % (bigip)
-    authPost = authbip.post(authurl, headers=contentJsonHeader, auth=(username, password), data=json.dumps(payload)).json()
-    if authPost.get('token'):
-        token = authPost['token']['token']
-        print ('Got Auth Token: %s' % (token))
-    elif authPost.get('code') == 401:
-        print ('Authentication failed due to invalid credentials; Exiting')
-        quit()
-    elif authPost.get('code') == 404:
+    try:
+        authPost = authbip.post(authurl, headers=contentJsonHeader, auth=(username, password), data=json.dumps(payload), timeout=5)
+    except requests.exceptions.RequestException as error:
+        print ('Connection Error for %s' % (error))
+        token = 'ConnectionError'
+        return token
+    #print ('authPost.status_code: %s' % (authPost.status_code))
+    if authPost.status_code == 404:
         print ('attempt to obtain authentication token failed; will fall back to basic authentication; remote LDAP auth will require configuration of local user account')
         token = None
+    elif authPost.status_code == 401:
+        print ('attempt to obtain authentication token failed due to invalid credentials')
+        token = 'Fail'
+    elif authPost.json().get('token'):
+        token = authPost.json()['token']['token']
+        print ('Got Auth Token: %s' % (token))
+    else:
+        print ('Unexpected error attempting POST to get auth token')
+        quit()
     return token
 
 
@@ -407,9 +424,10 @@ if args.xlsx:
     systemsSheet.write('H1', 'IP Intelligence BrightCloud Reachable', bold)
     systemsSheet.write('I1', 'Sync Status', bold)
     column = 9
-    for hostPort in args.hostport:
-        systemsSheet.write(0, column, 'Check for %s' % (hostPort), bold)
-        column += 1
+    if args.hostport:
+        for hostPort in args.hostport:
+            systemsSheet.write(0, column, 'Check for %s' % (hostPort), bold)
+            column += 1
     systemsRow = 1
     asmVirtualsSheet = workbook.add_worksheet('Virtual Servers with ASM')
     asmVirtualsSheet.write('A1', 'Hostname', bold)
@@ -435,8 +453,11 @@ if args.xlsx:
 
 if args.bigip:
     singleBigip = get_system_info(args.bigip, args.user, unverifiedPassword)
-    bigip_asm_device_check(singleBigip)
-    bigip_asm_virtual_report(singleBigip)
+    if singleBigip.get('authFail') or singleBigip('unreachable'):
+        print ('Device: %s unreachable or invalid credentials' % (args.bigip))
+    else:
+        bigip_asm_device_check(singleBigip)
+        bigip_asm_virtual_report(singleBigip)
 else:
     with open(args.systemlistfile, 'r') as systems:
         for line in systems:
@@ -444,22 +465,33 @@ else:
             bigipAaddr = line.split(':')[1].split(',')[0].strip()
             bigipBaddr = line.split(':')[1].split(',')[1].strip()
             bigipA = get_system_info(bigipAaddr, args.user, unverifiedPassword)
+            activeBigip = None
+            standbyBigip = None
+            if bigipA.get('authFail') or bigipA.get('unreachable'):
+                print ('Device: %s unreachable or invalid credentials' % (bigipAaddr))
+            else:
+                if bigipA['failoverState'] == 'active':
+                    activeBigip = bigipA
+                else:
+                    standbyBigip = bigipA
             bigipB = get_system_info(bigipBaddr, args.user, unverifiedPassword)
-            if bigipA['failoverState'] == 'active':
-                activeBigip = bigipA
+            if bigipB['authFail'] or bigipB['unreachable']:
+                print ('Device: %s unreachable or invalid credentials' % (bigipBaddr))
             else:
-                standbyBigip = bigipA
-            if bigipB['failoverState'] == 'active':
-                activeBigip = bigipB
-            else:
-                standbyBigip = bigipB
-            print ('Pair Name: %s - Active BIG-IP: %s - Standby BIG-IP: %s' % (pairName, activeBigip['hostname'], standbyBigip['hostname']))
-            print ('--Active System Info--')
-            bigip_asm_device_check(activeBigip)
-            print ('--Standby System Info--')
-            bigip_asm_device_check(standbyBigip)
-            print ('--Active Virtual(s) Report--')
-            bigip_asm_virtual_report(activeBigip)
+                if bigipB['failoverState'] == 'active':
+                    activeBigip = bigipB
+                else:
+                    standbyBigip = bigipB
+            print ('Pair Name: %s - Active BIG-IP: %s - Standby BIG-IP: %s' % (pairName, activeBigip.get('hostname'), standbyBigip.get('hostname')))
+            if activeBigip:
+                print ('--Active System Info--')
+                bigip_asm_device_check(activeBigip)
+            if standbyBigip:
+                print ('--Standby System Info--')
+                bigip_asm_device_check(standbyBigip)
+            if activeBigip:
+                print ('--Active Virtual(s) Report--')
+                bigip_asm_virtual_report(activeBigip)
 
 if args.xlsx:
     workbook.close()
