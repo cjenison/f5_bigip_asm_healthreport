@@ -293,15 +293,17 @@ def bigip_asm_virtual_report(bigip):
             if asmPolicyGeneralSettings.get('code') != 501:
                 if asmPolicyGeneralSettings['trustXff']:
                     print('Trust XFF enabled')
-                    for customXff in asmPolicyGeneralSettings.get('customXffHeaders'):
-                        print('Custom XFF Header: %s' % (customXff))
+                    if asmPolicyGeneralSettings.get('customXffHeaders'):
+                        for customXff in asmPolicyGeneralSettings.get('customXffHeaders'):
+                            print('Custom XFF Header: %s' % (customXff))
                 else:
                     print('Trust XFF disabled')
             else:
                 if asmPolicyDict[virtual]['trustXff']:
                     print('Trust XFF enabled')
-                    for customXff in asmPolicyDict.get('customXffHeaders'):
-                        print('Custom XFF Header: %s' % (customXff))
+                    if asmPolicyDict.get('customXffHeaders'):
+                        for customXff in asmPolicyDict.get('customXffHeaders'):
+                            print('Custom XFF Header: %s' % (customXff))
                 else:
                     print('Trust XFF disabled')
             maliciousIpBlock = False
@@ -343,7 +345,12 @@ def bigip_asm_virtual_report(bigip):
                     asmVirtualsSheet.write(asmVirtualsRow, 7, policyBuilderSettings['enablePolicyBuilder'])
                 elif bigip['shortVersion'] >= 12.0:
                     asmVirtualsSheet.write(asmVirtualsRow, 7, policyBuilderSettings['learningMode'])
-                asmVirtualsSheet.write(asmVirtualsRow, 8, asmPolicyGeneralSettings.get('trustXff'))
+                if asmPolicyDict[virtual].get('trustXff'):
+                    asmVirtualsSheet.write(asmVirtualsRow, 8, asmPolicyDict[virtual]['trustXff'])
+                elif asmPolicyGeneralSettings.get('trustXff'):
+                    asmVirtualsSheet.write(asmVirtualsRow, 8, asmPolicyGeneralSettings['trustXff'])
+                else:
+                    asmVirtualsSheet.write(asmVirtualsRow, 8, False)
                 asmVirtualsSheet.write(asmVirtualsRow, 9, maliciousIpBlock)
                 asmVirtualsSheet.write(asmVirtualsRow, 10, maliciousIpAlarm)
                 asmVirtualsRow += 1
