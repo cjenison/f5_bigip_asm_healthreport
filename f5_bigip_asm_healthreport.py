@@ -235,13 +235,14 @@ def bigip_asm_device_check(bigip):
         else:
             systemsSheet.write(systemsRow, 8, bigip['syncStatusColor'], redbg)
         column = 9
-        for hostPortStatus in bigip['hostPortCheck']:
-            hostPortKey = hostPortStatus.keys()[0]
-            if hostPortStatus.get(hostPortKey):
-                systemsSheet.write(systemsRow, column, hostPortStatus.get(hostPortKey))
-            else:
-                systemsSheet.write(systemsRow, column, hostPortStatus.get(hostPortKey), redbg)
-            column += 1
+        if args.hostport:
+            for hostPortStatus in bigip['hostPortCheck']:
+                hostPortKey = hostPortStatus.keys()[0]
+                if hostPortStatus.get(hostPortKey):
+                    systemsSheet.write(systemsRow, column, hostPortStatus.get(hostPortKey))
+                else:
+                    systemsSheet.write(systemsRow, column, hostPortStatus.get(hostPortKey), redbg)
+                    column += 1
         systemsRow += 1
 
 def bigip_asm_virtual_report(bigip):
@@ -342,7 +343,7 @@ def bigip_asm_virtual_report(bigip):
                     asmVirtualsSheet.write(asmVirtualsRow, 7, policyBuilderSettings['enablePolicyBuilder'])
                 elif bigip['shortVersion'] >= 12.0:
                     asmVirtualsSheet.write(asmVirtualsRow, 7, policyBuilderSettings['learningMode'])
-                asmVirtualsSheet.write(asmVirtualsRow, 8, asmPolicyGeneralSettings['trustXff'])
+                asmVirtualsSheet.write(asmVirtualsRow, 8, asmPolicyGeneralSettings.get('trustXff'))
                 asmVirtualsSheet.write(asmVirtualsRow, 9, maliciousIpBlock)
                 asmVirtualsSheet.write(asmVirtualsRow, 10, maliciousIpAlarm)
                 asmVirtualsRow += 1
@@ -475,7 +476,7 @@ else:
                 else:
                     standbyBigip = bigipA
             bigipB = get_system_info(bigipBaddr, args.user, unverifiedPassword)
-            if bigipB['authFail'] or bigipB['unreachable']:
+            if bigipB.get('authFail') or bigipB.get('unreachable'):
                 print ('Device: %s unreachable or invalid credentials' % (bigipBaddr))
             else:
                 if bigipB['failoverState'] == 'active':
