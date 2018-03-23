@@ -141,7 +141,8 @@ def get_system_info(bigip, username, password):
     for device in devices['items']:
         if device['selfDevice'] == 'true':
             systemInfo['failoverState'] = device['failoverState']
-            systemInfo['unicastAddresses'] = device['unicastAddress']
+            if device.get('unicastAddress'):
+                systemInfo['unicastAddresses'] = device['unicastAddress']
             systemInfo['configsyncIp'] = device['configsyncIp']
             systemInfo['timeLimitedModules'] = device['timeLimitedModules']
     return systemInfo
@@ -175,17 +176,18 @@ def bigip_asm_device_check(bigip):
     if bigip['ipIntelligenceLicensed']:
         checkBrightCloudPayload = {'command': 'run', 'utilCmdArgs': '-c \'nc -z -w3 vector.brightcloud.com 443\''}
         checkBrightCloud = bip.post('https://%s/mgmt/tm/util/bash' % (bigip['ipOrHostname']), headers=contentJsonHeader, data=json.dumps(checkBrightCloudPayload)).json()
-        if 'getaddrinfo' in checkBrightCloud['commandResult'] or 'name resolution' in checkBrightCloud['commandResult']:
-            print ('Unsuccessful attempt to reach Brightcloud due to name resolution problem')
-            bigip['checkBrightCloud'] = False
-        elif 'succeeded' in checkBrightCloud['commandResult']:
-            print ('Successfully Reached Brightcloud')
-            bigip['checkBrightCloud'] = True
-        elif checkBrightCloud['commandResult'] == '':
-            print ('Unsuccessful Attempt to Reach Brightcloud')
-            bigip['checkBrightCloud'] = False
+        if checkBrightCloud.get('commandResult'):
+            if 'getaddrinfo' in checkBrightCloud['commandResult'] or 'name resolution' in checkBrightCloud['commandResult']:
+                print ('Unsuccessful attempt to reach Brightcloud due to name resolution problem')
+                bigip['checkBrightCloud'] = False
+            elif 'succeeded' in checkBrightCloud['commandResult']:
+                print ('Successfully Reached Brightcloud')
+                bigip['checkBrightCloud'] = True
+            else:
+                print ('Unknown Error in reaching Brightcloud: %s' % (checkBrightCloud['commandResult']))
+                bigip['checkBrightCloud'] = False
         else:
-            print ('Unknown Error in reaching Brightcloud: %s' % (checkBrightCloud['commandResult']))
+            print ('Unsuccessful Attempt to Reach Brightcloud')
             bigip['checkBrightCloud'] = False
     else:
         print ('BIG-IP IP Intelligence not licensed')
